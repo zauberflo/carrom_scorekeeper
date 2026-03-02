@@ -2,7 +2,7 @@
 
 **Carrom Master** ist eine moderne, elegante Scoring-App für Carrom-Enthusiasten. Entwickelt, um den Spielfluss zu digitalisieren, ohne die Tradition des Spiels zu stören. Egal ob im Team oder im intensiven Einzelmatch – diese App hält den Fokus auf dem Board.
 
-![Carrom App Header](https://raw.githubusercontent.com/zauberflo/carrom_scorekeeper/asset/icon/app_icon.png) 
+![Carrom App Header](https://raw.githubusercontent.com/zauberflo/carrom_scorekeeper/main/assets/icon/app_icon.png) 
 
 
 ## ✨ Features
