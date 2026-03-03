@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:audioplayers/audioplayers.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'firebase_options.dart';
@@ -8,11 +8,7 @@ import 'dart:html' as html;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  try {
-    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  } catch (e) {
-    debugPrint("Firebase Error: $e");
-  }
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const CarromApp());
 }
 
@@ -22,11 +18,7 @@ class CarromApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.brown),
-        textTheme: GoogleFonts.poppinsTextTheme(),
-      ),
+      theme: ThemeData(useMaterial3: true, colorScheme: ColorScheme.fromSeed(seedColor: Colors.brown)),
       home: const CarromScorePage(),
     );
   }
@@ -34,20 +26,11 @@ class CarromApp extends StatelessWidget {
 
 class GameRound {
   final Map<int, int> teamPoints;
-  final Duration duration;
-  GameRound(this.teamPoints, this.duration);
-
-  Map<String, dynamic> toJson() => {
-    'points': teamPoints.map((k, v) => MapEntry(k.toString(), v)),
-    'durationMs': duration.inMilliseconds,
-  };
-
+  GameRound(this.teamPoints);
+  Map<String, dynamic> toJson() => {'points': teamPoints.map((k, v) => MapEntry(k.toString(), v))};
   factory GameRound.fromJson(Map<String, dynamic> json) {
     var pts = json['points'] as Map;
-    return GameRound(
-      pts.map((k, v) => MapEntry(int.parse(k.toString()), v as int)),
-      Duration(milliseconds: json['durationMs'] ?? 0),
-    );
+    return GameRound(pts.map((k, v) => MapEntry(int.parse(k.toString()), v as int)));
   }
 }
 
@@ -58,15 +41,12 @@ class CarromScorePage extends StatefulWidget {
 }
 
 class _CarromScorePageState extends State<CarromScorePage> {
-  final AudioPlayer _audioPlayer = AudioPlayer();
   final DatabaseReference _db = FirebaseDatabase.instance.ref();
-  
   String? _gameId;
   int mode = 2;
-  int targetScore = 25;
-  bool gameStarted = false; // Initial IMMER false
+  bool gameStarted = false;
+  bool _isSyncing = false; // Verhindert das Überschreiben beim Laden
   List<GameRound> rounds = [];
-  
   final List<TextEditingController> scoreControllers = List.generate(3, (_) => TextEditingController());
   final List<TextEditingController> nameControllers = List.generate(3, (_) => TextEditingController());
   final TextEditingController _joinController = TextEditingController();
@@ -80,53 +60,46 @@ class _CarromScorePageState extends State<CarromScorePage> {
   void _checkUrlForGame() {
     final String url = html.window.location.href;
     final Uri uri = Uri.parse(url);
-    String? id = uri.queryParameters['id'];
-    
-    if (id == null && url.contains('id=')) {
-      id = url.split('id=').last.split('&').first;
-    }
-    
-    if (id != null && id.isNotEmpty) {
-      _connectToGame(id.toUpperCase());
-    }
+    String? id = uri.queryParameters['id'] ?? (url.contains('id=') ? url.split('id=').last.split('&').first : null);
+    if (id != null) _connectToGame(id.toUpperCase());
   }
 
   void _connectToGame(String id) {
+    setState(() => _isSyncing = true); // Sperre für Schreibzugriffe
     _db.child('games/$id').onValue.listen((event) {
       if (event.snapshot.value != null) {
         final data = Map<String, dynamic>.from(event.snapshot.value as Map);
         setState(() {
           _gameId = id;
           mode = data['mode'] ?? 2;
-          targetScore = data['target'] ?? 25;
           nameControllers[0].text = data['n0'] ?? "";
           nameControllers[1].text = data['n1'] ?? "";
           nameControllers[2].text = data['n2'] ?? "";
-          
           if (data['rounds'] != null) {
-            rounds = (data['rounds'] as List)
-                .map((r) => GameRound.fromJson(Map<String, dynamic>.from(r)))
-                .toList();
-          } else {
-            rounds = [];
+            rounds = (data['rounds'] as List).map((r) => GameRound.fromJson(Map<String, dynamic>.from(r))).toList();
           }
-          gameStarted = true; // Hier wird umgeschaltet
+          gameStarted = true;
+          _isSyncing = false; // Laden beendet, Schreiben jetzt sicher
         });
+      } else {
+        setState(() => _isSyncing = false);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("ID nicht gefunden")));
       }
     });
   }
 
-  void _startNewCloudGame() {
+  void _startNewGame() {
     _gameId = "C-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}";
+    rounds = [];
+    gameStarted = true;
     _updateCloud();
     _connectToGame(_gameId!);
   }
 
   void _updateCloud() {
-    if (_gameId == null) return;
+    if (_gameId == null || _isSyncing) return; // WICHTIG: Nicht schreiben, wenn wir gerade laden!
     _db.child('games/$_gameId').set({
       'mode': mode,
-      'target': targetScore,
       'n0': nameControllers[0].text,
       'n1': nameControllers[1].text,
       'n2': nameControllers[2].text,
@@ -134,86 +107,75 @@ class _CarromScorePageState extends State<CarromScorePage> {
     });
   }
 
+  void _addRound() {
+    Map<int, int> data = {};
+    for (int i = 0; i < mode; i++) {
+      data[i] = int.tryParse(scoreControllers[i].text) ?? 0;
+      scoreControllers[i].clear();
+    }
+    setState(() => rounds.add(GameRound(data)));
+    _updateCloud();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF1E4D3),
-      appBar: AppBar(
-        title: Text(gameStarted ? "ID: $_gameId" : "CARROM SETUP"),
-        backgroundColor: Colors.brown.shade800,
-        foregroundColor: Colors.white,
-      ),
+      appBar: AppBar(title: Text(gameStarted ? "SPIEL: $_gameId" : "CARROM CLOUD")),
       body: gameStarted ? _buildBoard() : _buildSetup(),
     );
   }
 
   Widget _buildSetup() {
     return Center(
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 400),
-        padding: const EdgeInsets.all(24),
-        child: Card(
-          elevation: 8,
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text("NEUES SPIEL", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 20),
-                Row(
-                  children: [
-                    _modeBtn("2 Spieler", 2),
-                    const SizedBox(width: 10),
-                    _modeBtn("3 Spieler", 3),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 50)),
-                  onPressed: _startNewCloudGame,
-                  child: const Text("SPIEL ERSTELLEN"),
-                ),
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 30),
-                  child: Row(children: [Expanded(child: Divider()), Padding(padding: EdgeInsets.symmetric(horizontal: 10), child: Text("ODER")), Expanded(child: Divider())]),
-                ),
-                const Text("BEITRETEN", style: TextStyle(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: _joinController,
-                  decoration: const InputDecoration(
-                    border: OutlineInputBorder(),
-                    labelText: "ID eingeben (z.B. C-123)",
-                    prefixIcon: Icon(Icons.vpn_key),
-                  ),
-                  onSubmitted: (v) => _connectToGame(v.trim().toUpperCase()),
-                ),
-                const SizedBox(height: 10),
-                ElevatedButton.icon(
-                  onPressed: () => _connectToGame(_joinController.text.trim().toUpperCase()),
-                  icon: const Icon(Icons.login),
-                  label: const Text("MIT ID BEITRETEN"),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.brown.shade100),
-                )
-              ],
-            ),
+      child: Card(
+        margin: const EdgeInsets.all(20),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ElevatedButton(onPressed: _startNewGame, child: const Text("NEUES SPIEL ERSTELLEN")),
+              const Padding(padding: EdgeInsets.symmetric(vertical: 20), child: Text("--- ODER BEITRETEN ---")),
+              TextField(
+                controller: _joinController,
+                decoration: const InputDecoration(labelText: "ID eingeben", border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 10),
+              ElevatedButton(
+                onPressed: () => _connectToGame(_joinController.text.trim().toUpperCase()),
+                child: const Text("MIT ID BEITRETEN"),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
 
-  Widget _modeBtn(String t, int v) => Expanded(
-    child: ChoiceChip(
-      label: Text(t),
-      selected: mode == v,
-      onSelected: (s) => setState(() => mode = v),
-    ),
-  );
-
   Widget _buildBoard() {
-    return Center(child: Text("Spiel läuft für ID: $_gameId\nRunden: ${rounds.length}")); 
-    // Hier kommt dein bestehendes Board-UI rein...
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: List.generate(mode, (i) => Text("${rounds.fold(0, (sum, r) => sum + (r.teamPoints[i] ?? 0))}", style: const TextStyle(fontSize: 40))),
+        ),
+        Padding(
+          padding: const EdgeInsets.all(10),
+          child: Row(
+            children: [
+              ...List.generate(mode, (i) => Expanded(child: TextField(controller: scoreControllers[i], keyboardType: TextInputType.number))),
+              IconButton(onPressed: _addRound, icon: const Icon(Icons.add_circle, size: 40)),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: rounds.length,
+            itemBuilder: (context, i) => ListTile(title: Text("Runde ${i + 1}: ${rounds[i].teamPoints.values.join(' | ')}")),
+          ),
+        ),
+        TextButton(onPressed: () => Clipboard.setData(ClipboardData(text: "${html.window.location.origin}/?id=$_gameId")), child: const Text("Link kopieren")),
+      ],
+    );
   }
 }
