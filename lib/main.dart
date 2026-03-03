@@ -8,7 +8,11 @@ import 'dart:html' as html;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  try {
+    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  } catch (e) {
+    debugPrint("Firebase Fehler: $e");
+  }
   runApp(const CarromApp());
 }
 
@@ -45,8 +49,10 @@ class _CarromScorePageState extends State<CarromScorePage> {
   String? _gameId;
   int mode = 2;
   bool gameStarted = false;
-  bool _isSyncing = false; // Verhindert das Überschreiben beim Laden
+  bool _isSyncing = false; 
+  String _connectionStatus = "Bereit"; // Verbindungsnachweis
   List<GameRound> rounds = [];
+  
   final List<TextEditingController> scoreControllers = List.generate(3, (_) => TextEditingController());
   final List<TextEditingController> nameControllers = List.generate(3, (_) => TextEditingController());
   final TextEditingController _joinController = TextEditingController();
@@ -60,12 +66,21 @@ class _CarromScorePageState extends State<CarromScorePage> {
   void _checkUrlForGame() {
     final String url = html.window.location.href;
     final Uri uri = Uri.parse(url);
-    String? id = uri.queryParameters['id'] ?? (url.contains('id=') ? url.split('id=').last.split('&').first : null);
-    if (id != null) _connectToGame(id.toUpperCase());
+    String? id = uri.queryParameters['id'];
+    if (id == null && url.contains('id=')) {
+      id = url.split('id=').last.split('&').first;
+    }
+    if (id != null && id.isNotEmpty) {
+      _connectToGame(id.toUpperCase());
+    }
   }
 
   void _connectToGame(String id) {
-    setState(() => _isSyncing = true); // Sperre für Schreibzugriffe
+    setState(() {
+      _isSyncing = true;
+      _connectionStatus = "Verbinde zu $id...";
+    });
+
     _db.child('games/$id').onValue.listen((event) {
       if (event.snapshot.value != null) {
         final data = Map<String, dynamic>.from(event.snapshot.value as Map);
@@ -79,25 +94,33 @@ class _CarromScorePageState extends State<CarromScorePage> {
             rounds = (data['rounds'] as List).map((r) => GameRound.fromJson(Map<String, dynamic>.from(r))).toList();
           }
           gameStarted = true;
-          _isSyncing = false; // Laden beendet, Schreiben jetzt sicher
+          _isSyncing = false;
+          _connectionStatus = "Verbunden";
         });
       } else {
-        setState(() => _isSyncing = false);
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("ID nicht gefunden")));
+        setState(() {
+          _isSyncing = false;
+          _connectionStatus = "ID $id nicht gefunden!";
+        });
       }
+    }, onError: (error) {
+      setState(() {
+        _isSyncing = false;
+        _connectionStatus = "Fehler: $error";
+      });
     });
   }
 
   void _startNewGame() {
     _gameId = "C-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}";
     rounds = [];
-    gameStarted = true;
     _updateCloud();
     _connectToGame(_gameId!);
   }
 
   void _updateCloud() {
-    if (_gameId == null || _isSyncing) return; // WICHTIG: Nicht schreiben, wenn wir gerade laden!
+    // SCHREIB-STOPP: Verhindert das Löschen der Daten beim ersten Sync
+    if (_gameId == null || _isSyncing) return; 
     _db.child('games/$_gameId').set({
       'mode': mode,
       'n0': nameControllers[0].text,
@@ -120,32 +143,50 @@ class _CarromScorePageState extends State<CarromScorePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(gameStarted ? "SPIEL: $_gameId" : "CARROM CLOUD")),
+      appBar: AppBar(
+        title: Text(gameStarted ? "ID: $_gameId" : "CARROM SETUP"),
+        backgroundColor: Colors.brown.shade800,
+        foregroundColor: Colors.white,
+      ),
       body: gameStarted ? _buildBoard() : _buildSetup(),
     );
   }
 
   Widget _buildSetup() {
-    return Center(
-      child: Card(
-        margin: const EdgeInsets.all(20),
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ElevatedButton(onPressed: _startNewGame, child: const Text("NEUES SPIEL ERSTELLEN")),
-              const Padding(padding: EdgeInsets.symmetric(vertical: 20), child: Text("--- ODER BEITRETEN ---")),
-              TextField(
-                controller: _joinController,
-                decoration: const InputDecoration(labelText: "ID eingeben", border: OutlineInputBorder()),
-              ),
-              const SizedBox(height: 10),
-              ElevatedButton(
-                onPressed: () => _connectToGame(_joinController.text.trim().toUpperCase()),
-                child: const Text("MIT ID BEITRETEN"),
-              ),
-            ],
+    return Container(
+      color: const Color(0xFFF1E4D3),
+      child: Center(
+        child: Card(
+          margin: const EdgeInsets.all(20),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text("NEUES SPIEL", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 15),
+                ElevatedButton(onPressed: _startNewGame, child: const Text("SPIEL ERSTELLEN")),
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 20),
+                  child: Row(children: [Expanded(child: Divider()), Padding(padding: EdgeInsets.symmetric(horizontal: 10), child: Text("ODER")), Expanded(child: Divider())]),
+                ),
+                const Text("SPIEL BEITRETEN", style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _joinController,
+                  textAlign: TextAlign.center,
+                  decoration: const InputDecoration(hintText: "ID eingeben", border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton(
+                  onPressed: () => _connectToGame(_joinController.text.trim().toUpperCase()),
+                  child: const Text("JETZT BEITRETEN"),
+                ),
+                const SizedBox(height: 15),
+                // --- VERBINDUNGSNACHWEIS ---
+                Text("Status: $_connectionStatus", style: TextStyle(color: _isSyncing ? Colors.orange : Colors.grey, fontSize: 12)),
+              ],
+            ),
           ),
         ),
       ),
@@ -155,16 +196,21 @@ class _CarromScorePageState extends State<CarromScorePage> {
   Widget _buildBoard() {
     return Column(
       children: [
+        const SizedBox(height: 20),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: List.generate(mode, (i) => Text("${rounds.fold(0, (sum, r) => sum + (r.teamPoints[i] ?? 0))}", style: const TextStyle(fontSize: 40))),
+          children: List.generate(mode, (i) => Column(children: [
+            Text("${rounds.fold(0, (sum, r) => sum + (r.teamPoints[i] ?? 0))}", style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold)),
+            Text(nameControllers[i].text.isEmpty ? "P${i+1}" : nameControllers[i].text),
+          ])),
         ),
+        const Divider(height: 30),
         Padding(
-          padding: const EdgeInsets.all(10),
+          padding: const EdgeInsets.symmetric(horizontal: 10),
           child: Row(
             children: [
-              ...List.generate(mode, (i) => Expanded(child: TextField(controller: scoreControllers[i], keyboardType: TextInputType.number))),
-              IconButton(onPressed: _addRound, icon: const Icon(Icons.add_circle, size: 40)),
+              ...List.generate(mode, (i) => Expanded(child: TextField(controller: scoreControllers[i], keyboardType: TextInputType.number, textAlign: TextAlign.center))),
+              IconButton.filled(onPressed: _addRound, icon: const Icon(Icons.add)),
             ],
           ),
         ),
@@ -174,7 +220,11 @@ class _CarromScorePageState extends State<CarromScorePage> {
             itemBuilder: (context, i) => ListTile(title: Text("Runde ${i + 1}: ${rounds[i].teamPoints.values.join(' | ')}")),
           ),
         ),
-        TextButton(onPressed: () => Clipboard.setData(ClipboardData(text: "${html.window.location.origin}/?id=$_gameId")), child: const Text("Link kopieren")),
+        TextButton(onPressed: () {
+          final String url = "${html.window.location.origin}${html.window.location.pathname}?id=$_gameId";
+          Clipboard.setData(ClipboardData(text: url));
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Link kopiert!")));
+        }, child: const Text("Einladungs-Link kopieren")),
       ],
     );
   }
