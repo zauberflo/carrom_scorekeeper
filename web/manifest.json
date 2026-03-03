@@ -1,13 +1,11 @@
 {
-    "name": "carrom_scorekeeper",
-    "short_name": "carrom_scorekeeper",
+    "name": "Carrom Master",
+    "short_name": "Carrom",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
-    "prefer_related_applications": false,
+    "background_color": "#E7D4B5",
+    "theme_color": "#5D4037",
+    "description": "Carrom Score Counter",
     "icons": [
         {
             "src": "icons/Icon-192.png",

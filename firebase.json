@@ -1,0 +1,33 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "carrom-scorekeeper",
+          "appId": "1:577715327752:android:b61531b092b45c0f2252bd",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "carrom-scorekeeper",
+          "configurations": {
+            "android": "1:577715327752:android:b61531b092b45c0f2252bd",
+            "ios": "1:577715327752:ios:58340f399311f1752252bd",
+            "macos": "1:577715327752:ios:58340f399311f1752252bd",
+            "web": "1:577715327752:web:e442aad6852d3cb42252bd",
+            "windows": "1:577715327752:web:310d05eeca5451e82252bd"
+          }
+        }
+      }
+    }
+  },
+  "hosting": {
+    "public": "public",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ]
+  }
+}

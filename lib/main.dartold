@@ -1,0 +1,909 @@
+import 'package:flutter/material.dart';
+
+import 'package:flutter/services.dart';
+
+import 'package:google_fonts/google_fonts.dart';
+
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'dart:convert';
+
+import 'package:intl/intl.dart';
+
+import 'package:audioplayers/audioplayers.dart';
+
+import 'package:firebase_core/firebase_core.dart';
+
+import 'package:firebase_database/firebase_database.dart';
+
+import 'firebase_options.dart';
+
+import 'dart:html' as html;
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  try {
+    await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform);
+  } catch (e) {
+    debugPrint("Firebase Init: $e");
+  }
+
+  runApp(const CarromApp());
+}
+
+class CarromApp extends StatelessWidget {
+  const CarromApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.brown),
+        textTheme: GoogleFonts.poppinsTextTheme(),
+      ),
+      home: const CarromScorePage(),
+    );
+  }
+}
+
+class Team {
+  String name;
+
+  Color color;
+
+  Team({required this.name, required this.color});
+}
+
+class GameRound {
+  final Map<int, int> teamPoints;
+
+  final Duration duration;
+
+  GameRound(this.teamPoints, this.duration);
+
+  Map<String, dynamic> toJson() => {
+        'points': teamPoints.map((k, v) => MapEntry(k.toString(), v)),
+        'durationMs': duration.inMilliseconds,
+      };
+
+  factory GameRound.fromJson(Map<String, dynamic> json) => GameRound(
+        (json['points'] as Map).map((k, v) => MapEntry(int.parse(k), v as int)),
+        Duration(milliseconds: json['durationMs'] ?? 0),
+      );
+}
+
+class CarromScorePage extends StatefulWidget {
+  const CarromScorePage({super.key});
+
+  @override
+  State<CarromScorePage> createState() => _CarromScorePageState();
+}
+
+class _CarromScorePageState extends State<CarromScorePage> {
+  final AudioPlayer _audioPlayer = AudioPlayer();
+
+  final DatabaseReference _db = FirebaseDatabase.instance.ref();
+
+  String? _gameId;
+
+  int mode = 2;
+
+  int targetScore = 25;
+
+  bool gameStarted = false;
+
+  List<GameRound> rounds = [];
+
+  List<Map<String, dynamic>> gameHistory = [];
+
+  DateTime _roundStartTime = DateTime.now();
+
+  List<Team> teams = [
+    Team(name: "Weiß", color: Colors.white),
+    Team(name: "Schwarz", color: const Color(0xFF2C2C2C)),
+    Team(name: "Rot", color: const Color(0xFFB71C1C)),
+  ];
+
+  final List<TextEditingController> scoreControllers =
+      List.generate(3, (_) => TextEditingController());
+
+  final List<TextEditingController> nameControllers =
+      List.generate(3, (i) => TextEditingController());
+
+  late TextEditingController targetScoreController;
+
+  @override
+  void initState() {
+    super.initState();
+
+    targetScoreController = TextEditingController(text: targetScore.toString());
+
+    _loadData();
+
+    _checkUrlForGame();
+
+    for (var controller in scoreControllers) {
+      controller.addListener(() => setState(() {}));
+    }
+  }
+
+  void _playClick() async {
+    try {
+      await _audioPlayer.play(AssetSource('click.mp3'));
+    } catch (_) {}
+  }
+
+// --- CLOUD & SHARE ---
+
+  void _checkUrlForGame() {
+    final uri = Uri.base;
+
+    if (uri.queryParameters.containsKey('id')) {
+      _gameId = uri.queryParameters['id'];
+
+      _connectToGame(_gameId!);
+    }
+  }
+
+  void _connectToGame(String id) {
+    _db.child('games/$id').onValue.listen((event) {
+      if (event.snapshot.value != null) {
+        final data = Map<String, dynamic>.from(event.snapshot.value as Map);
+
+        setState(() {
+          _gameId = id;
+
+          mode = data['mode'] ?? 2;
+
+          targetScore = data['target'] ?? 25;
+
+          gameStarted = true;
+
+          nameControllers[0].text = data['n0'] ?? "";
+
+          nameControllers[1].text = data['n1'] ?? "";
+
+          nameControllers[2].text = data['n2'] ?? "";
+
+          if (data['rounds'] != null) {
+            rounds = (data['rounds'] as List)
+                .map((r) => GameRound.fromJson(Map<String, dynamic>.from(r)))
+                .toList();
+          }
+        });
+
+        _playClick();
+      }
+    });
+  }
+
+  void _startNewCloudGame() {
+    _gameId =
+        "C-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}";
+
+    _updateCloud();
+
+    _connectToGame(_gameId!);
+
+    setState(() {
+      gameStarted = true;
+      _roundStartTime = DateTime.now();
+    });
+
+    _saveCurrentGame();
+  }
+
+  void _updateCloud() {
+    if (_gameId == null) return;
+
+    _db.child('games/$_gameId').set({
+      'mode': mode,
+      'target': targetScore,
+      'n0': nameControllers[0].text,
+      'n1': nameControllers[1].text,
+      'n2': nameControllers[2].text,
+      'rounds': rounds.map((r) => r.toJson()).toList(),
+    });
+  }
+
+  void _shareGame() {
+    _playClick();
+
+    final String url =
+        "${html.window.location.origin}${html.window.location.pathname}?id=$_gameId";
+
+    Clipboard.setData(ClipboardData(text: url)).then((_) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text("Live-Link kopiert! 🔗")));
+    });
+  }
+
+// --- HIGHSCORE & IMPORT/EXPORT ---
+
+  void _exportFullHistory() {
+    _playClick();
+
+    String jsonString = jsonEncode(gameHistory);
+
+    Clipboard.setData(ClipboardData(text: jsonString)).then((_) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Highscore exportiert! 📤")));
+    });
+  }
+
+  void _importHistoryDialog() {
+    TextEditingController importCtrl = TextEditingController();
+
+    showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+              title: const Text("Daten importieren"),
+              content: TextField(
+                  controller: importCtrl,
+                  maxLines: 5,
+                  decoration:
+                      const InputDecoration(hintText: "Code einfügen...")),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text("ABBRECHEN")),
+                ElevatedButton(
+                    onPressed: () async {
+                      try {
+                        List<dynamic> imported = jsonDecode(importCtrl.text);
+
+                        final prefs = await SharedPreferences.getInstance();
+
+                        setState(() {
+                          for (var entry in imported) {
+                            bool exists = gameHistory.any((old) =>
+                                old['date'] == entry['date'] &&
+                                old['result'] == entry['result']);
+
+                            if (!exists)
+                              gameHistory.add(entry as Map<String, dynamic>);
+                          }
+
+                          gameHistory
+                              .sort((a, b) => b['date'].compareTo(a['date']));
+                        });
+
+                        await prefs.setStringList('history_v5',
+                            gameHistory.map((e) => jsonEncode(e)).toList());
+
+                        Navigator.pop(ctx);
+                      } catch (_) {}
+                    },
+                    child: const Text("IMPORT"))
+              ],
+            ));
+  }
+
+// --- LOKALE LOGIK ---
+
+  Future<void> _loadData() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    setState(() {
+      List<String> historyStrings = prefs.getStringList('history_v5') ?? [];
+
+      gameHistory = historyStrings
+          .map((s) => jsonDecode(s) as Map<String, dynamic>)
+          .toList();
+
+      String? current = prefs.getString('current_game');
+
+      if (current != null && _gameId == null) {
+        var data = jsonDecode(current);
+
+        mode = data['mode'];
+
+        targetScore = data['target'];
+
+        gameStarted = data['started'];
+
+        nameControllers[0].text = data['n0'];
+
+        nameControllers[1].text = data['n1'];
+
+        nameControllers[2].text = data['n2'];
+
+        rounds =
+            (data['rounds'] as List).map((r) => GameRound.fromJson(r)).toList();
+      } else {
+        _loadStoredNames();
+      }
+    });
+  }
+
+  void _loadStoredNames() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    setState(() {
+      if (mode == 2) {
+        nameControllers[0].text = prefs.getString('last_team_0') ?? "Weiß";
+
+        nameControllers[1].text = prefs.getString('last_team_1') ?? "Schwarz";
+      } else {
+        nameControllers[0].text = prefs.getString('last_solo_0') ?? "Spieler 1";
+
+        nameControllers[1].text = prefs.getString('last_solo_1') ?? "Spieler 2";
+
+        nameControllers[2].text = prefs.getString('last_solo_2') ?? "Spieler 3";
+      }
+    });
+  }
+
+  Future<void> _saveCurrentGame() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    var data = {
+      'mode': mode,
+      'target': targetScore,
+      'started': gameStarted,
+      'n0': nameControllers[0].text,
+      'n1': nameControllers[1].text,
+      'n2': nameControllers[2].text,
+      'rounds': rounds.map((r) => r.toJson()).toList(),
+    };
+
+    await prefs.setString('current_game', jsonEncode(data));
+  }
+
+  Future<void> _archiveGame(String resultMsg, {int? winnerIdx}) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    String date = DateFormat('dd.MM.yy, HH:mm').format(DateTime.now());
+
+    String detailedScore = List.generate(mode == 2 ? 2 : 3,
+        (i) => "${nameControllers[i].text}: ${getTotalScore(i)}").join(" | ");
+
+    var historyEntry = {
+      'date': date,
+      'mode': mode == 2 ? 'Team' : 'Einzel',
+      'result': resultMsg,
+      'detailedScore': detailedScore,
+      'winnerColor': winnerIdx != null ? teams[winnerIdx].color.value : null,
+      'players': List.generate(mode == 2 ? 2 : 3,
+          (i) => "${nameControllers[i].text}: ${getTotalScore(i)}").join("\n")
+    };
+
+    setState(() {
+      gameHistory.insert(0, historyEntry);
+      rounds.clear();
+      gameStarted = false;
+      _gameId = null;
+    });
+
+    await prefs.setStringList(
+        'history_v5', gameHistory.map((e) => jsonEncode(e)).toList());
+
+    await prefs.remove('current_game');
+
+    if (_gameId != null) _db.child('games/$_gameId').remove();
+  }
+
+  void submitRound() {
+    _playClick();
+
+    Map<int, int> data = {};
+
+    int total = 0;
+
+    for (int i = 0; i < (mode == 2 ? 2 : 3); i++) {
+      int p = int.tryParse(scoreControllers[i].text) ?? 0;
+
+      data[i] = p;
+      total += p;
+    }
+
+    if (mode == 3 && (total != 12 && total != 17)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Summe muss 12 oder 17 sein!")));
+
+      return;
+    }
+
+    if (total > 0) {
+      Duration roundDur = DateTime.now().difference(_roundStartTime);
+
+      setState(() {
+        rounds.add(GameRound(data, roundDur));
+        _roundStartTime = DateTime.now();
+      });
+
+      for (var c in scoreControllers) {
+        c.clear();
+      }
+
+      _updateCloud();
+      _saveCurrentGame();
+      _checkGameStatus();
+    }
+  }
+
+  int getTotalScore(int index) =>
+      rounds.fold(0, (sum, r) => sum + (r.teamPoints[index] ?? 0));
+
+  String _formatDuration(Duration d) =>
+      "${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
+
+  void _checkGameStatus() {
+    int? winnerIdx;
+
+    for (int i = 0; i < (mode == 2 ? 2 : 3); i++) {
+      if (getTotalScore(i) >= targetScore) {
+        winnerIdx = i;
+        break;
+      }
+    }
+
+    if (winnerIdx != null || (mode == 2 && rounds.length >= 8)) {
+      String msg = winnerIdx != null
+          ? "${nameControllers[winnerIdx].text} gewinnt!"
+          : "Unentschieden";
+
+      _showWinnerDialog(msg, winnerIdx);
+    }
+  }
+
+  void _showWinnerDialog(String message, int? winnerIdx) {
+    showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+              title: const Center(child: Text("🍻 SPIEL ENDE")),
+              content: Text(message,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 20, fontWeight: FontWeight.bold)),
+              actions: [
+                Center(
+                    child: ElevatedButton(
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _archiveGame(message, winnerIdx: winnerIdx);
+                        },
+                        child: const Text("SPEICHERN")))
+              ],
+            ));
+  }
+
+// --- UI ---
+
+  @override
+  Widget build(BuildContext context) {
+    int active = (mode == 2) ? 2 : 3;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF1E4D3),
+      appBar: AppBar(
+          centerTitle: true,
+          backgroundColor: Colors.brown.shade800,
+          foregroundColor: Colors.white,
+          leading: IconButton(
+              icon: const Icon(Icons.emoji_events), onPressed: _showHistory),
+          title: InkWell(
+              onTap: gameStarted ? _shareGame : null,
+              child: Column(children: [
+                Text(
+                    gameStarted ? "ID: ${_gameId ?? 'Lokal'}" : "CARROM MASTER",
+                    style: const TextStyle(fontSize: 16)),
+                if (gameStarted)
+                  const Text("Tippen zum Teilen 🔗",
+                      style: TextStyle(fontSize: 9))
+              ])),
+          actions: [
+            if (gameStarted)
+              IconButton(
+                  icon: const Icon(Icons.refresh),
+                  onPressed: () => _archiveGame("Abgebrochen"))
+          ]),
+      body: !gameStarted ? _buildSetup() : _buildBoard(active),
+    );
+  }
+
+  Widget _buildSetup() {
+    return Container(
+        decoration: BoxDecoration(
+            gradient: LinearGradient(
+                colors: [Colors.brown.shade800, Colors.brown.shade400])),
+        child: Center(
+            child: SingleChildScrollView(
+                child: Card(
+                    margin: const EdgeInsets.all(20),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(25)),
+                    child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child:
+                            Column(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.sports_esports,
+                              size: 50, color: Colors.brown),
+                          const Text("NEUES SPIEL",
+                              style: TextStyle(
+                                  fontSize: 22, fontWeight: FontWeight.bold)),
+                          const Divider(height: 30),
+                          Row(children: [
+                            _buildModeButton("TEAM", Icons.groups, 2),
+                            const SizedBox(width: 10),
+                            _buildModeButton("EINZEL", Icons.person, 3),
+                          ]),
+                          const SizedBox(height: 20),
+                          TextField(
+                              controller: targetScoreController,
+                              keyboardType: TextInputType.number,
+                              decoration: InputDecoration(
+                                  labelText: "Zielpunkte",
+                                  border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(15))),
+                              onChanged: (v) =>
+                                  targetScore = int.tryParse(v) ?? 25),
+                          const SizedBox(height: 20),
+                          ...List.generate(
+                              mode == 2 ? 2 : 3,
+                              (i) => Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: TextField(
+                                      controller: nameControllers[i],
+                                      decoration: InputDecoration(
+                                          labelText: mode == 2
+                                              ? (i == 0
+                                                  ? "Name Weiß"
+                                                  : "Name Schwarz")
+                                              : "Name Spieler ${i + 1}",
+                                          prefixIcon: Padding(
+                                              padding: const EdgeInsets.all(10),
+                                              child: _buildPuck(teams[i].color,
+                                                  size: 20)),
+                                          border: OutlineInputBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(
+                                                      15)))))),
+                          ElevatedButton(
+                              onPressed: () {
+                                _playClick();
+                                _startNewCloudGame();
+                              },
+                              style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.brown,
+                                  foregroundColor: Colors.white,
+                                  minimumSize: const Size(double.infinity, 50),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(15))),
+                              child: const Text("SPIEL STARTEN")),
+                        ]))))));
+  }
+
+  Widget _buildModeButton(String label, IconData icon, int value) {
+    bool isSelected = mode == value;
+
+    return Expanded(
+        child: InkWell(
+      onTap: () => setState(() {
+        mode = value;
+        targetScore = mode == 3 ? 66 : 25;
+        targetScoreController.text = targetScore.toString();
+        _loadStoredNames();
+      }),
+      child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 15),
+          decoration: BoxDecoration(
+              color: isSelected ? Colors.brown : Colors.grey.shade200,
+              borderRadius: BorderRadius.circular(15)),
+          child: Column(children: [
+            Icon(icon, color: isSelected ? Colors.white : Colors.brown),
+            Text(label,
+                style: TextStyle(
+                    color: isSelected ? Colors.white : Colors.brown,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12))
+          ])),
+    ));
+  }
+
+  Widget _buildBoard(int activeTeams) {
+    int currentTotal = 0;
+
+    List<int> currentScores =
+        List.generate(activeTeams, (i) => getTotalScore(i));
+
+    int? leaderIdx;
+    int? loserIdx;
+
+    if (rounds.isNotEmpty) {
+      int maxVal = currentScores.reduce((a, b) => a > b ? a : b);
+
+      int minVal = currentScores.reduce((a, b) => a < b ? a : b);
+
+      if (maxVal != minVal) {
+        if (currentScores.where((s) => s == maxVal).length == 1)
+          leaderIdx = currentScores.indexOf(maxVal);
+
+        if (currentScores.where((s) => s == minVal).length == 1)
+          loserIdx = currentScores.indexOf(minVal);
+      }
+    }
+
+    for (int i = 0; i < activeTeams; i++) {
+      currentTotal += int.tryParse(scoreControllers[i].text) ?? 0;
+    }
+
+    bool isInvalid = mode == 3 && currentTotal > 17;
+
+    return Column(children: [
+      Container(
+          margin: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 8),
+          decoration: BoxDecoration(
+              color: const Color(0xFFD2B48C),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.brown.shade900, width: 8)),
+          child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: List.generate(activeTeams, (i) {
+                bool isL = i == leaderIdx;
+                bool isLo = i == loserIdx;
+
+                return AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                        color: isL
+                            ? Colors.amber.withOpacity(0.2)
+                            : (isLo
+                                ? Colors.red.withOpacity(0.1)
+                                : Colors.transparent),
+                        borderRadius: BorderRadius.circular(15),
+                        border: Border.all(
+                            color: isL
+                                ? Colors.amber
+                                : (isLo
+                                    ? Colors.redAccent.withOpacity(0.5)
+                                    : Colors.transparent),
+                            width: 2)),
+                    child: Column(children: [
+                      Stack(alignment: Alignment.topRight, children: [
+                        _buildPuck(teams[i].color, size: 45, hasShadow: true),
+                        if (isL) const Text("👑")
+                      ]),
+                      Text("${currentScores[i]}",
+                          style: TextStyle(
+                              fontSize: 45,
+                              fontWeight: FontWeight.bold,
+                              color: isL
+                                  ? Colors.brown.shade900
+                                  : Colors.black87)),
+                      Text(nameControllers[i].text.toUpperCase(),
+                          style: const TextStyle(
+                              fontSize: 10, fontWeight: FontWeight.bold)),
+                    ]));
+              }))),
+      Container(
+          padding: const EdgeInsets.all(12),
+          margin: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+              color: isInvalid ? Colors.red.withOpacity(0.2) : Colors.white60,
+              borderRadius: BorderRadius.circular(15)),
+          child: Column(children: [
+            if (mode == 3)
+              Text("Summe: $currentTotal / 17",
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: isInvalid ? Colors.red : Colors.brown)),
+            Row(children: [
+              ...List.generate(
+                  activeTeams,
+                  (i) => Expanded(
+                      child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          child: TextField(
+                              controller: scoreControllers[i],
+                              keyboardType: TextInputType.number,
+                              textAlign: TextAlign.center,
+                              decoration: InputDecoration(
+                                  labelText: "Pkt",
+                                  filled: true,
+                                  fillColor: Colors.white,
+                                  border: OutlineInputBorder(
+                                      borderRadius:
+                                          BorderRadius.circular(10))))))),
+              IconButton.filled(
+                  onPressed: isInvalid ? null : submitRound,
+                  icon: const Icon(Icons.add),
+                  style: IconButton.styleFrom(backgroundColor: Colors.brown)),
+            ])
+          ])),
+      Expanded(
+          child: ListView.builder(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: rounds.length,
+              itemBuilder: (ctx, i) {
+                final idx = rounds.length - 1 - i;
+
+                bool canDelete = (idx == rounds.length - 1);
+
+                return Card(
+                    child: ListTile(
+                        dense: true,
+                        leading: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text("#${idx + 1}"),
+                              Text(_formatDuration(rounds[idx].duration),
+                                  style: const TextStyle(
+                                      fontSize: 9, color: Colors.grey))
+                            ]),
+                        title: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceAround,
+                            children: List.generate(
+                                activeTeams,
+                                (p) => Text(
+                                    "${nameControllers[p].text}: ${rounds[idx].teamPoints[p]}"))),
+                        trailing: canDelete
+                            ? IconButton(
+                                icon: const Icon(Icons.delete_outline,
+                                    color: Colors.red, size: 20),
+                                onPressed: () => setState(() {
+                                      rounds.removeAt(idx);
+                                      _updateCloud();
+                                    }))
+                            : null));
+              })),
+    ]);
+  }
+
+  void _showHistory() {
+    _playClick();
+
+    showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(25))),
+        builder: (ctx) => StatefulBuilder(
+            builder: (context, setModalState) => Container(
+                  height: MediaQuery.of(context).size.height * 0.75,
+                  padding: const EdgeInsets.all(20),
+                  child: Column(children: [
+                    Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          IconButton(
+                              icon: const Icon(Icons.download,
+                                  color: Colors.blue),
+                              onPressed: _importHistoryDialog),
+                          const Text("🏆 HALL OF FAME",
+                              style: TextStyle(
+                                  fontWeight: FontWeight.bold, fontSize: 18)),
+                          Row(children: [
+                            IconButton(
+                                icon: const Icon(Icons.upload,
+                                    color: Colors.green),
+                                onPressed: _exportFullHistory),
+                            IconButton(
+                                icon: const Icon(Icons.delete_sweep,
+                                    color: Colors.red),
+                                onPressed: () => _confirmAction("Alle löschen?",
+                                        "Möchtest du wirklich den gesamten Highscore leeren?",
+                                        () async {
+                                      final prefs =
+                                          await SharedPreferences.getInstance();
+
+                                      setState(() {
+                                        gameHistory.clear();
+                                      });
+
+                                      await prefs.remove('history_v5');
+
+                                      setModalState(() {});
+                                    })),
+                          ]),
+                        ]),
+                    const Divider(),
+                    Expanded(
+                        child: gameHistory.isEmpty
+                            ? const Center(child: Text("Keine Einträge"))
+                            : ListView.builder(
+                                itemCount: gameHistory.length,
+                                itemBuilder: (c, i) => Card(
+                                        child: ListTile(
+                                      leading:
+                                          gameHistory[i]['winnerColor'] != null
+                                              ? _buildPuck(
+                                                  Color(gameHistory[i]
+                                                      ['winnerColor']),
+                                                  size: 30)
+                                              : const Icon(Icons.help_outline),
+                                      title: Text(gameHistory[i]['result']),
+                                      subtitle: Text(
+                                          "${gameHistory[i]['date']}\n${gameHistory[i]['detailedScore']}"),
+                                      trailing: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            IconButton(
+                                                icon: const Icon(Icons.share,
+                                                    size: 20),
+                                                onPressed: () {
+                                                  Clipboard.setData(ClipboardData(
+                                                      text:
+                                                          "🏆 CARROM ERGEBNIS\n${gameHistory[i]['result']}\n${gameHistory[i]['players']}"));
+
+                                                  ScaffoldMessenger.of(context)
+                                                      .showSnackBar(const SnackBar(
+                                                          content: Text(
+                                                              "Ergebnis kopiert!")));
+                                                }),
+                                            IconButton(
+                                                icon: const Icon(
+                                                    Icons.delete_outline,
+                                                    color: Colors.red,
+                                                    size: 20),
+                                                onPressed: () => _confirmAction(
+                                                        "Spiel löschen?",
+                                                        "Diesen Eintrag dauerhaft entfernen?",
+                                                        () async {
+                                                      final prefs =
+                                                          await SharedPreferences
+                                                              .getInstance();
+
+                                                      setState(() {
+                                                        gameHistory.removeAt(i);
+                                                      });
+
+                                                      await prefs.setStringList(
+                                                          'history_v5',
+                                                          gameHistory
+                                                              .map((e) =>
+                                                                  jsonEncode(e))
+                                                              .toList());
+
+                                                      setModalState(() {});
+                                                    })),
+                                          ]),
+                                    )))),
+                  ]),
+                )));
+  }
+
+  void _confirmAction(String title, String content, VoidCallback onConfirm) {
+    showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+              title: Text(title),
+              content: Text(content),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text("ABBRECHEN")),
+                ElevatedButton(
+                    onPressed: () {
+                      onConfirm();
+                      Navigator.pop(ctx);
+                    },
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red,
+                        foregroundColor: Colors.white),
+                    child: const Text("LÖSCHEN")),
+              ],
+            ));
+  }
+
+  Widget _buildPuck(Color color, {double size = 30, bool hasShadow = false}) =>
+      Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: color,
+              border: Border.all(
+                  color: color == Colors.white ? Colors.grey : Colors.black,
+                  width: 1.5),
+              boxShadow: hasShadow
+                  ? [const BoxShadow(blurRadius: 5, offset: Offset(2, 2))]
+                  : []));
+}
