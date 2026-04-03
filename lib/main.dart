@@ -129,7 +129,7 @@ class _CarromScorePageState extends State<CarromScorePage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text("Version: 3.2.3", style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+            const Text("Version: 3.2.4", style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
             const SizedBox(height: 5),
             const Text("App von Senior Codemaster Flo", style: TextStyle(color: Colors.white, fontSize: 12, fontStyle: FontStyle.italic)),
             const SizedBox(height: 15),
@@ -631,14 +631,12 @@ Widget _buildYearlyTimeTab(Map data) {
     }).toList(),
   );
 }
-
-  Widget _buildPlayerRanking(Map data) {
+Widget _buildPlayerRanking(Map data) {
   Map<String, int> winCount = {};
   Map<String, DateTime> lastWinDate = {};
   Set<String> allParticipants = {}; 
   DateTime now = DateTime.now();
 
-  // Liste der Begriffe, die KEINE Spieler sind
   final List<String> blackList = [
     '[team]', '[einzel]', 'weiß', 'weiss', 'schwarz', 
     'gegen', 'vs', 'punkte', 'sieger', 'spieler', 'runde', 'spiel'
@@ -647,39 +645,28 @@ Widget _buildYearlyTimeTab(Map data) {
   data.forEach((k, v) {
     String rawWinner = v['winner']?.toString() ?? "";
     String rawDetails = v['details']?.toString() ?? "";
-    
     DateTime matchDate = v['timestamp'] != null 
         ? DateTime.fromMillisecondsSinceEpoch(v['timestamp']) 
         : DateTime.now();
 
-    // 1. SCHRITT: Namen aus dem DETAILS-Feld extrahieren
+    // 1. Namen aus Details extrahieren
     List<String> detailParts = rawDetails
         .split(RegExp(r'(&|vs\.?|und|,|/|\(|\)|\s+)', caseSensitive: false))
         .map((e) => e.trim())
-        .where((e) => e.isNotEmpty && 
-                      e.length > 2 && 
-                      !blackList.contains(e.toLowerCase()))
+        .where((e) => e.isNotEmpty && e.length > 2 && !blackList.contains(e.toLowerCase()))
         .toList();
-    
-    for (var p in detailParts) {
-      allParticipants.add(p); 
-    }
+    for (var p in detailParts) { allParticipants.add(p); }
 
-    // 2. SCHRITT: Gewinner aus dem WINNER-Feld zählen
+    // 2. Gewinner zählen
     List<String> winners = rawWinner.contains("&") 
         ? rawWinner.split("&").map((e) => e.trim()).toList() 
         : [rawWinner];
 
     for (var w in winners) {
       String cleanW = w.trim();
-      if (cleanW.isNotEmpty && 
-          !blackList.contains(cleanW.toLowerCase()) && 
-          cleanW != "Ehem. Legende" && 
-          cleanW != "Unbekannt") {
-        
+      if (cleanW.isNotEmpty && !blackList.contains(cleanW.toLowerCase()) && cleanW != "Ehem. Legende" && cleanW != "Unbekannt") {
         allParticipants.add(cleanW);
         winCount[cleanW] = (winCount[cleanW] ?? 0) + 1;
-        
         if (lastWinDate[cleanW] == null || matchDate.isAfter(lastWinDate[cleanW]!)) {
           lastWinDate[cleanW] = matchDate;
         }
@@ -687,7 +674,12 @@ Widget _buildYearlyTimeTab(Map data) {
     }
   });
 
-  // 3. SCHRITT: Liste für die Anzeige vorbereiten
+  // Globalen letzten Sieg finden
+  DateTime? absoluteLastWinTime;
+  if (lastWinDate.isNotEmpty) {
+    absoluteLastWinTime = lastWinDate.values.reduce((a, b) => a.isAfter(b) ? a : b);
+  }
+
   var rankingList = allParticipants.map((name) {
     return {
       'name': name,
@@ -696,10 +688,21 @@ Widget _buildYearlyTimeTab(Map data) {
     };
   }).toList();
 
-  // Sortierung: Meiste Siege zuerst
+  // VERBESSERTE SORTIERUNG:
   rankingList.sort((a, b) {
-    int cmp = (b['wins'] as int).compareTo(a['wins'] as int);
-    if (cmp != 0) return cmp;
+    // 1. Nach Siegen sortieren
+    int winCmp = (b['wins'] as int).compareTo(a['wins'] as int);
+    if (winCmp != 0) return winCmp;
+
+    // 2. Bei Gleichstand: Wer hat zuletzt gewonnen?
+    DateTime? dateA = a['lastWin'] as DateTime?;
+    DateTime? dateB = b['lastWin'] as DateTime?;
+    if (dateA != null && dateB != null) {
+      return dateB.compareTo(dateA); // Neueres Datum zuerst
+    } else if (dateA != null) return -1;
+      else if (dateB != null) return 1;
+
+    // 3. Alphabetisch
     return (a['name'] as String).compareTo(b['name'] as String);
   });
 
@@ -713,19 +716,32 @@ Widget _buildYearlyTimeTab(Map data) {
       int wins = player['wins'] as int;
       DateTime? lastWin = player['lastWin'] as DateTime?;
       
+      bool isCurrentChamp = lastWin != null && lastWin == absoluteLastWinTime;
+
+      String subtitle;
+      if (wins == 0) {
+        subtitle = "Wartet noch auf den ersten Sieg... 🍗";
+      } else if (isCurrentChamp) {
+        subtitle = "AKTUELLER GEWINNER 🏆";
+      } else {
+        int days = now.difference(lastWin!).inDays;
+        subtitle = "Seit $days Tagen sieglos 💀";
+      }
+
       return ListTile(
         leading: CircleAvatar(
-          backgroundColor: wins > 0 ? Colors.brown[900] : Colors.grey[400],
-          child: Text("${i + 1}", style: const TextStyle(color: Colors.white, fontSize: 12)),
+          backgroundColor: isCurrentChamp ? Colors.amber : (wins > 0 ? Colors.brown[900] : Colors.grey[400]),
+          child: Text("${i + 1}", style: TextStyle(color: isCurrentChamp ? Colors.black : Colors.white, fontSize: 12)),
         ),
         title: Text(name, style: TextStyle(
           fontWeight: wins > 0 ? FontWeight.bold : FontWeight.normal,
+          color: isCurrentChamp ? Colors.orange[900] : Colors.black,
         )),
-        subtitle: Text(wins > 0 
-            ? "Seit ${now.difference(lastWin!).inDays} Tagen sieglos 💀" 
-            : "Wartet noch auf den ersten Sieg... 🍗",
-          style: const TextStyle(fontSize: 11)
-        ),
+        subtitle: Text(subtitle, style: TextStyle(
+          fontSize: 11, 
+          fontWeight: isCurrentChamp ? FontWeight.bold : FontWeight.normal,
+          color: isCurrentChamp ? Colors.orange[800] : Colors.grey[600],
+        )),
         trailing: Text("$wins Siege", 
           style: TextStyle(
             fontWeight: wins > 0 ? FontWeight.bold : FontWeight.normal,
